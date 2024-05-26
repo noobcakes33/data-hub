@@ -15,7 +15,7 @@ notion = Client(auth=st.secrets["NOTION_TOKEN"])
 # Function to fetch data from Notion
 @st.cache
 def fetch_notion_data(database_id):
-    response = notion.databases.query(database_id)
+    response = notion.databases.query(database_id=database_id)
     return response['results']
 
 
@@ -31,24 +31,26 @@ def read_file_from_url(url):
     return df
 
 
-# Streamlit sidebar input for Notion database ID and source page ID
+# Streamlit sidebar input for database ID
 st.sidebar.title("Settings")
-database_id = st.sidebar.text_input("Notion Database ID", "your_merchant_collection_log_database_id")
-source_page_id = st.sidebar.text_input("Notion Source Page ID", "your_source_page_id")
+database_id = st.sidebar.text_input("Notion Database ID", st.secrets["DATABASE_ID"])
 
-# Fetch and process data from the Notion database
+# Fetch and process data from the "Data Hub Progress" database
 data = fetch_notion_data(database_id)
 
 # Process the fetched data to extract file URLs and read them into DataFrames
 dfs = []
 source_file_url = None
 for item in data:
-    if item['properties'].get('Type') and item['properties']['Type']['select']['name'] == 'Source':
-        source_file_url = item['properties']['File']['files'][0]['file']['url']
-    elif item['properties'].get('Type') and item['properties']['Type']['select']['name'] == 'Submission':
-        file_url = item['properties']['File']['files'][0]['file']['url']
+    properties = item['properties']
+    file_url = properties['Files & media']['files'][0]['file']['url']
+
+    if properties['Type']['select']['name'] == 'Source':
+        source_file_url = file_url
+    elif properties['Type']['select']['name'] == 'Submission' and properties['Data Type']['select'][
+        'name'] == 'Merchants':
         df = read_file_from_url(file_url)
-        dfs.append((file_url, df))
+        dfs.append((properties['Team member']['select']['name'], df))
 
 # Process the source file
 if source_file_url:
@@ -57,15 +59,14 @@ if source_file_url:
     st.dataframe(source_df)
 
     # Get merchant names from the source file
-    merchant_names = set(source_df['Merchant Name'].str.lower())
+    merchant_names = set(source_df['extracted_merchant_for_review'].str.lower())
 
     if dfs:
         team_progress = {}
         overall_collected = set()
 
-        for file_url, member_df in dfs:
-            member_name = file_url.split('/')[-1].split('-')[0]  # Extract team member name from file name
-            member_merchant_names = set(member_df['Merchant Name'].str.lower())
+        for member_name, member_df in dfs:
+            member_merchant_names = set(member_df['name'].str.lower())
 
             # Calculate individual progress
             collected_count = len(member_merchant_names)
