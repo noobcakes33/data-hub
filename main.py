@@ -1,104 +1,248 @@
 import streamlit as st
 import pandas as pd
-import matplotlib.pyplot as plt
 from notion_client import Client
-import requests
-import io
+from Dashboard.dashboard_visualization import DashboardVisualization
+from Dashboard.utils import read_file_from_url, get_dataframes_and_properties, read_and_display_source_file, \
+    process_new_merchants_data
+from Dashboard.dashboard_generator import DashboardGenerator
+from Dashboard.controller import DataManager
+
+# Read secrets
+notion_token = st.secrets["NOTION_TOKEN"]
+database_id = st.secrets["DATABASE_ID"]
+
+# Initialize Dashboard Visualizer
+visualizer = DashboardVisualization()
+
+# Initialize Dashboard Generator
+dashboard_generator = DashboardGenerator()
+
+# Initialize Data Manager
+data_manager = DataManager()
+
+# Initialize the Notion client
+notion_client = Client(auth=notion_token)
 
 # Streamlit page configuration
 st.set_page_config(page_title="Data Hub Team Progress", layout="wide")
 
-# Initialize the Notion client
-notion = Client(auth=st.secrets["NOTION_TOKEN"])
+# Fetch and process data from the "Data Hub Progress" Notion Database
+data = data_manager.get_notion_data(notion_client, database_id)
+date_range, source_file_selection = dashboard_generator.init_sidebar(data)
+start_date, end_date = date_range
+source_title, source_file_url, source_filename = source_file_selection
 
+# Filter data based on source title
+data_in_scope = data_manager.get_data_in_scope(data, source_title)
 
-# Function to fetch data from Notion
-@st.cache
-def fetch_notion_data(database_id):
-    response = notion.databases.query(database_id=database_id)
-    return response['results']
-
-
-# Function to download and read CSV/Excel files from URLs
-def read_file_from_url(url):
-    response = requests.get(url)
-    if url.endswith('.csv'):
-        df = pd.read_csv(io.StringIO(response.text))
-    elif url.endswith('.xlsx'):
-        df = pd.read_excel(io.BytesIO(response.content))
-    else:
-        raise ValueError("Unsupported file format")
-    return df
-
-
-# Streamlit sidebar input for database ID
-st.sidebar.title("Settings")
-database_id = st.sidebar.text_input("Notion Database ID", st.secrets["DATABASE_ID"])
-
-# Fetch and process data from the "Data Hub Progress" database
-data = fetch_notion_data(database_id)
+# Filter data based on date range and also get all Ngrams, Merchants, and Reviewed Transactions files
+filtered_data = data_manager.filter_data_by_datae_range(data, start_date=start_date, end_date=end_date)
 
 # Process the fetched data to extract file URLs and read them into DataFrames
-dfs = []
-source_file_url = None
-for item in data:
-    properties = item['properties']
-    file_url = properties['Files & media']['files'][0]['file']['url']
+# Lists to store dataframes
+dfs_new_merchants = []
+dfs_reviewed_transactions = []
+dfs_ngrams = []
 
-    if properties['Type']['select']['name'] == 'Source':
-        source_file_url = file_url
-    elif properties['Type']['select']['name'] == 'Submission' and properties['Data Type']['select'][
-        'name'] == 'Merchants':
-        df = read_file_from_url(file_url)
-        dfs.append((properties['Team member']['select']['name'], df))
+# Process each item in the filtered data
+for item in filtered_data:
+    properties = item['properties']
+    file_type = properties['Type']['select']['name']
+    data_type = properties['Data Type']['select']['name']
+
+    if file_type == 'Submission':
+        if data_type == 'Merchants':
+            get_dataframes_and_properties(properties, dfs_new_merchants)
+        elif data_type == 'Reviewed Transactions':
+            get_dataframes_and_properties(properties, dfs_reviewed_transactions)
+    elif file_type == 'Ngram-File' and data_type == 'Ngrams':
+        get_dataframes_and_properties(properties, dfs_ngrams)
 
 # Process the source file
 if source_file_url:
-    source_df = read_file_from_url(source_file_url)
-    st.write("Source Data")
-    st.dataframe(source_df)
+    try:
+        source_df = read_and_display_source_file(source_file_url, source_title, source_filename)
+        source_transactions = source_df["description"].values.tolist()
 
-    # Get merchant names from the source file
-    merchant_names = set(source_df['extracted_merchant_for_review'].str.lower())
+        if dfs_new_merchants:
+            process_new_merchants_data(dfs_new_merchants)
 
-    if dfs:
-        team_progress = {}
-        overall_collected = set()
+        if dfs_reviewed_transactions:
+            team_progress_transactions = {}
+            overall_reviewed_transactions = []
+            team_progress_ngrams = {}
+            overall_reviewed_ngrams = []
+            team_progress_ngram_transactions = {}
 
-        for member_name, member_df in dfs:
-            member_merchant_names = set(member_df['name'].str.lower())
+            for member_name, member_filename, submission_date, member_df in dfs_reviewed_transactions:
+                member_reviewed_transactions = member_df['description'].values.tolist()
+                # Member Valid Ngrams
+                merchant_id_col = "merchant_id"
+                if merchant_id_col not in member_df:
+                    merchant_id_col = "merchant_Id"
 
-            # Calculate individual progress
-            collected_count = len(member_merchant_names)
-            team_progress[member_name] = collected_count
+                ngram_col = "key"
+                if ngram_col not in member_df:
+                    ngram_col = "extracted_merchant_for_review"
+                print(member_df.columns.tolist())
+                invalid_ngram_query = (
+                        (member_df[merchant_id_col].isin([0, "0", "?"])) |
+                        (member_df[merchant_id_col].isna())
+                )
+                # Member Valid Ngrams
+                member_valid_ngrams = member_df[~invalid_ngram_query][ngram_col].unique().tolist()
 
-            # Update overall collected merchants
-            overall_collected.update(member_merchant_names)
+                # Member Invalid Ngrams
+                member_invalid_ngrams = member_df[invalid_ngram_query][ngram_col].unique().tolist()
 
-        # Calculate overall progress
-        total_merchants = len(merchant_names)
-        collected_merchants = len(overall_collected)
-        overall_progress = (collected_merchants / total_merchants) * 100
+                # Valid Ngrams Transactions and Coverage
+                member_valid_ngrams_transactions = member_df[~invalid_ngram_query]["description"]
+                member_valid_ngrams_transactions_coverage = len(member_valid_ngrams_transactions) / len(member_df)
 
-        st.write("Overall Progress")
-        st.write(f"Collected {collected_merchants} out of {total_merchants} merchants.")
-        st.write(f"Overall Coverage: {overall_progress:.2f}%")
+                # Invalid Ngrams Transactions and Coverage
+                member_invalid_ngrams_transactions = member_df[invalid_ngram_query]["description"]
+                member_invalid_ngrams_transactions_coverage = len(member_invalid_ngrams_transactions) / len(member_df)
 
-        # Display individual progress
-        st.write("Individual Progress")
-        progress_df = pd.DataFrame(list(team_progress.items()), columns=['Team Member', 'Collected Merchants'])
-        progress_df['Coverage (%)'] = (progress_df['Collected Merchants'] / total_merchants) * 100
-        st.dataframe(progress_df)
+                # Number of merchants
+                number_of_merchants = member_df[~invalid_ngram_query]["extracted_merchant_for_review"].nunique()
 
-        # Plotting the progress
-        fig, ax = plt.subplots(figsize=(10, 6))
-        ax.bar(progress_df['Team Member'], progress_df['Coverage (%)'], color='skyblue')
-        ax.set_title('Team Members Progress')
-        ax.set_xlabel('Team Member')
-        ax.set_ylabel('Coverage (%)')
-        ax.set_ylim(0, 100)
-        st.pyplot(fig)
-    else:
-        st.write("No submitted files found.")
+                # Number of new merchants
+                number_of_new_merchants = member_df[
+                    (~member_df[merchant_id_col].isna()) &
+                    (member_df[merchant_id_col].astype(str).str.startswith("n-"))
+                    ]["extracted_merchant_for_review"].nunique()
+
+                # Initialize the nested dictionary structure if it does not exist
+                if member_name not in team_progress_ngram_transactions:
+                    team_progress_ngram_transactions[member_name] = {}
+
+                if submission_date not in team_progress_ngram_transactions[member_name]:
+                    team_progress_ngram_transactions[member_name][submission_date] = {}
+
+                # Store the calculated metrics
+                team_progress_ngram_transactions[member_name][submission_date][member_filename] = {
+                    "valid_ngrams_transactions": len(member_valid_ngrams_transactions),
+                    "invalid_ngrams_transactions": len(member_invalid_ngrams_transactions),
+                    "valid_ngrams_transactions_coverage": member_valid_ngrams_transactions_coverage,
+                    "invalid_ngrams_transactions_coverage": member_invalid_ngrams_transactions_coverage,
+                    "number_of_merchants": number_of_merchants,
+                    "number_of_new_merchants": number_of_new_merchants
+                }
+                print("[team_progress_ngram_transactions] ", team_progress_ngram_transactions)
+
+                # Calculate individual progress
+                reviewed_transactions_count = len(member_reviewed_transactions)
+                if member_name not in team_progress_transactions:
+                    team_progress_transactions[member_name] = reviewed_transactions_count
+                else:
+                    team_progress_transactions[member_name] += reviewed_transactions_count
+
+                if member_name not in team_progress_ngrams:
+                    team_progress_ngrams[member_name] = {
+                        "valid_ngrams": len(member_valid_ngrams),
+                        "invalid_ngrams": len(member_invalid_ngrams)
+                    }
+                else:
+                    team_progress_ngrams[member_name]["valid_ngrams"] += len(member_valid_ngrams)
+                    team_progress_ngrams[member_name]["invalid_ngrams"] += len(member_invalid_ngrams)
+
+                # Update overall reviewed transactions
+                overall_reviewed_transactions += member_reviewed_transactions
+                overall_reviewed_ngrams += member_valid_ngrams
+                overall_reviewed_ngrams += member_invalid_ngrams
+
+            # Calculate overall progress
+            total_transactions_count = len(source_transactions)
+            overall_reviewed_transactions_count = len(overall_reviewed_transactions)
+            overall_reviewed_transactions_progress = (
+                                                             overall_reviewed_transactions_count / total_transactions_count
+                                                     ) * 100
+
+            st.write("## Overall Reviewed Transactions Progress")
+            st.write(
+                f"- **Total Reviewed Transactions:** {overall_reviewed_transactions_count} out of {total_transactions_count}")
+            st.write(f"- **Overall Coverage:** {overall_reviewed_transactions_progress:.2f}%")
+
+            st.write("### Reviewed Transactions")
+            progress_df_transactions = pd.DataFrame(list(team_progress_transactions.items()),
+                                                    columns=['Team Member', 'Reviewed Transactions'])
+            progress_df_transactions['Coverage (%)'] = (progress_df_transactions[
+                                                            'Reviewed Transactions'] / total_transactions_count) * 100
+            st.dataframe(progress_df_transactions)
+
+            st.write("### Reviewed Ngrams")
+            # Transform the dictionary into a list of tuples
+            data = [(member, info['valid_ngrams'], info['invalid_ngrams']) for member, info in
+                    team_progress_ngrams.items()]
+
+            # Create Ngram progress DataFrame
+            progress_df_ngrams = pd.DataFrame(data, columns=['Team Member', 'Valid Ngrams', 'Invalid Ngrams'])
+            st.dataframe(progress_df_ngrams)
+
+            # Plotting the progress
+            st.write("## Progress Charts")
+            fig = visualizer.plot_detailed_pie_chart(progress_df_transactions, total_txn_count=total_transactions_count)
+            st.plotly_chart(fig)
+
+            # Flatten the nested dictionary into two separate lists for two DataFrames
+            data_ngrams = []
+            data_merchants = []
+
+            for member_name, dates in team_progress_ngram_transactions.items():
+                for date, files in dates.items():
+                    for filename, metrics in files.items():
+                        # Data for ngrams transactions
+                        data_ngrams.append({
+                            "Team Member": member_name,
+                            "Date": date,
+                            "File": filename,
+                            "valid_ngrams_transactions": metrics["valid_ngrams_transactions"],
+                            "invalid_ngrams_transactions": metrics["invalid_ngrams_transactions"],
+                            "valid_ngrams_transactions_coverage": metrics["valid_ngrams_transactions_coverage"],
+                            "invalid_ngrams_transactions_coverage": metrics["invalid_ngrams_transactions_coverage"]
+                        })
+                        # Data for merchants
+                        data_merchants.append({
+                            "Team Member": member_name,
+                            "Date": date,
+                            "File": filename,
+                            "number_of_merchants": metrics["number_of_merchants"],
+                            "number_of_new_merchants": metrics["number_of_new_merchants"]
+                        })
+
+            # Create DataFrames
+            df_ngrams = pd.DataFrame(data_ngrams)
+            df_merchants = pd.DataFrame(data_merchants)
+
+            # Convert the Date columns to datetime type
+            df_ngrams['Date'] = pd.to_datetime(df_ngrams['Date'])
+            df_merchants['Date'] = pd.to_datetime(df_merchants['Date'])
+
+            # Streamlit app
+            st.title("Team Progress Ngram Transactions and Merchants")
+
+            # Filter data for a specific team member if needed
+            selected_member = st.selectbox("Select Team Member:", df_ngrams["Team Member"].unique())
+            filtered_df_ngrams = df_ngrams[df_ngrams["Team Member"] == selected_member]
+            filtered_df_merchants = df_merchants[df_merchants["Team Member"] == selected_member]
+            print("[filtered_df_ngrams] \n")
+            print(filtered_df_ngrams)
+
+            filtered_df_ngrams = filtered_df_ngrams.sort_values("Date", ascending=True)
+
+            # Plot for reviewed ngrams transactions
+            fig_ngrams = visualizer.plot_reviewed_txns_scatter_plot(filtered_df_ngrams, selected_member)
+
+            # Plot for merchants
+            fig_merchants = visualizer.plot_merchants_scatter_plot(filtered_df_merchants, selected_member)
+
+            # Show the plots in Streamlit
+            st.plotly_chart(fig_ngrams)
+            st.plotly_chart(fig_merchants)
+
+        else:
+            st.write("No submitted files found.")
+    except ValueError as e:
+        st.error(f"Error reading source file: {e}")
 else:
     st.write("Source file not found.")
