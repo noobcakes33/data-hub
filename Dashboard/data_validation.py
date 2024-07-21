@@ -60,7 +60,17 @@ class FileValidator:
     #     print("[get_latest_entries] ", results['results'])
     #     return results['results']
 
-
+    def update_submission_validation(self, page_id, flag):
+        self.notion_client.pages.update(
+            page_id=page_id,
+            properties={
+                "Submission Validation": {
+                    "select": {
+                        "name": flag
+                    }
+                }
+            }
+        )
     # Function to update the validation comment
     def update_validation_comment(self, page_id, validation_comments_list):
         print("[update_validation_comment] page_id: ", page_id )
@@ -138,6 +148,10 @@ class FileValidator:
                             validation_comments_list.append("OK")
 
                         print("[poll_notion_database] update_validation_comment init...")
+                        if validation_comments_list[0] == "OK":
+                            self.update_submission_validation(page_id, flag="True")
+                        else:
+                            self.update_submission_validation(page_id, flag="False")
                         self.update_validation_comment(page_id, validation_comments_list)
                 last_checked = datetime.now()
                 # Save the last checked timestamp to file
