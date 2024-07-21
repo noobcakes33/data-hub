@@ -18,15 +18,16 @@ class DataManager:
                 data_in_scope.append(item)
         return data_in_scope
 
-    def filter_data_by_datae_range(self, data, start_date, end_date):
+    def filter_data_by_datae_range(self, data, start_date, end_date, source_title):
         filtered_data = []
         for item in data:
             try:
                 if (item['properties']['Type']['select']['name'] != 'Source') and (
                         start_date <= datetime.strptime(item['properties']['Date']['date']['start'],
-                                                        '%Y-%m-%d').date() <= end_date):
+                                                        '%Y-%m-%d').date() <= end_date) and (
+                        item["properties"]["Title"]["title"][0]["text"]["content"] == source_title
+                ):
                     filtered_data.append(item)
             except Exception as e:
                 print(e)
         return filtered_data
-
