@@ -1,5 +1,4 @@
 import threading
-import schedule
 import time
 import streamlit as st
 import pandas as pd
