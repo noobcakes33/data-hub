@@ -41,7 +41,7 @@ threading.Thread(target=validator.poll_notion_database_and_validate, daemon=True
 def run_population_periodically():
     while True:
         txn_population_manager.run_population_pipeline()
-        time.sleep(60)  # Sleep for 1 minute
+        time.sleep(60 * 30)  # Sleep for 30 minutes
 
 # Start the periodic population thread
 periodic_thread = threading.Thread(target=run_population_periodically)
