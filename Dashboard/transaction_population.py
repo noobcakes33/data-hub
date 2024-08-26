@@ -456,6 +456,7 @@ class TxnPopulationManager:
         for entry in merchants_entries:
             file_url = entry['properties']['Files & media']['files'][0]['file']['url']
             df_merchants = self.read_csv_from_url(file_url)
+            self.update_population_flag(page_id=entry["id"], comment="Processing")
             self.populate_logos_and_merchants(df=df_merchants)
             self.update_population_flag(page_id=entry["id"], comment="Done")
 
@@ -463,5 +464,6 @@ class TxnPopulationManager:
         for entry in reviewed_transactions_entries:
             file_url = entry['properties']['Files & media']['files'][0]['file']['url']
             df_transactions = self.read_csv_from_url(file_url)
+            self.update_population_flag(page_id=entry["id"], comment="Processing")
             self.populate_validated_transaction(df_transactions)
             self.update_population_flag(page_id=entry["id"], comment="Done")
