@@ -267,7 +267,7 @@ class TxnPopulationManager:
                         df.at[index, "merchant_id"] = merchant_id
                         df.at[index, "logo_s3_urls"] = s3_logo_url
             else:
-                print(f"Merchant {row["name"]} already exists!")
+                print(f"Merchant: {row['name']} already exists!")
                 
             print()
             time.sleep(1)
