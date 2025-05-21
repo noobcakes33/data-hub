@@ -232,37 +232,43 @@ class TxnPopulationManager:
             return None, None
 
     def populate_logos_and_merchants(self, df):
+        # Connect to the database
+        conn = self.connect_to_db()
         # failed_merchants = []
         # failed_logos = []
         # Iterate over each row
         for index, row in df.iterrows():
             print(f"[index] {index}")
-            # Upload logo to S3 and retrieve S3 URL
-            s3_logo_url = self.upload_logo_to_s3(row)
-            print(f"[s3_logo_url] {s3_logo_url}")
-            if s3_logo_url is not None:
-                # Insert logo URL into the logo table and retrieve logo ID
-                logo_id = self.insert_logo_to_db(s3_logo_url)
-                print(f"[logo_id] {logo_id}")
-                if logo_id is not None:
-                    # Add merchant to database with the obtained logo ID
-                    merchant_id = self.add_merchant_to_db(row, logo_id)
+            if not self.merchant_exists_and_validated(conn, row["name"]):
+                # Upload logo to S3 and retrieve S3 URL
+                s3_logo_url = self.upload_logo_to_s3(row)
+                print(f"[s3_logo_url] {s3_logo_url}")
+                if s3_logo_url is not None:
+                    # Insert logo URL into the logo table and retrieve logo ID
+                    logo_id = self.insert_logo_to_db(s3_logo_url)
+                    print(f"[logo_id] {logo_id}")
+                    if logo_id is not None:
+                        # Add merchant to database with the obtained logo ID
+                        merchant_id = self.add_merchant_to_db(row, logo_id)
+                        if merchant_id is not None:
+                            # Update DataFrame with merchant ID
+                            df.at[index, "merchant_id"] = merchant_id
+                            df.at[index, "logo_s3_urls"] = s3_logo_url
+                        else:
+                            print("Failed to add merchant to database.")
+                            # failed_merchants.append(index)
+                    else:
+                        print("Failed to insert logo to database.")
+                        # failed_logos.append(index)
+                else:
+                    merchant_id = self.add_merchant_to_db(row, logo_id=None)
                     if merchant_id is not None:
                         # Update DataFrame with merchant ID
                         df.at[index, "merchant_id"] = merchant_id
                         df.at[index, "logo_s3_urls"] = s3_logo_url
-                    else:
-                        print("Failed to add merchant to database.")
-                        # failed_merchants.append(index)
-                else:
-                    print("Failed to insert logo to database.")
-                    # failed_logos.append(index)
             else:
-                merchant_id = self.add_merchant_to_db(row, logo_id=None)
-                if merchant_id is not None:
-                    # Update DataFrame with merchant ID
-                    df.at[index, "merchant_id"] = merchant_id
-                    df.at[index, "logo_s3_urls"] = s3_logo_url
+                print(f"Merchant {row["name"]} already exists!")
+                
             print()
             time.sleep(1)
     
@@ -282,6 +288,12 @@ class TxnPopulationManager:
         cur.execute("SELECT * FROM transaction WHERE raw_description = %s AND validated = True", (description,))
         return cur.fetchone() is not None
 
+    # Function to check if a merchant exists and is validated
+    def merchant_exists_and_validated(self, conn, name):
+        cur = conn.cursor()
+        cur.execute("SELECT * FROM merchant WHERE name = %s AND validated = True", (name,))
+        return cur.fetchone() is not None
+    
     def insert_transaction(self, conn, description, merchant_name, merchant_details):
         # Fetch merchant details
         merchant_id, category, subtype, website, logo_id = merchant_details
